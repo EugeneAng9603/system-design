@@ -263,24 +263,115 @@ Impression limits (per session or per ad)
 
 Click tracking and analytics handled via instrumentation
 
-🔁 End-to-End Request Flow Summary
-text
-Copy
-Edit
-[User Opens App]
-   ↓
-[Client → GET /feed]
-   ↓
-[Feed API Gateway]
-   ↓
-[Feed Generation Cluster Node (via consistent hash)]
-   ↓
-   ├── Pull from Feed Shard (user’s local feed)
-   ├── Pull hot posts from Redis cache
-   ├── Request ads from Ad Server
-   └── Merge & rerank using Ranking Engine
-   ↓
-[Final sorted feed → Returned to Client]
+## 🔁 End-to-End Request Flow Summary
+
+This section outlines the full sequence of operations that occur **when a user opens their app and requests their news feed** in a Twitter-like system using feed shards, hot cache, ad injection, and ranking.
+
+---
+
+### 📱 [1] User Opens the App
+
+- The mobile or web client triggers a `GET /feed` request.
+- The request includes the user's identity (user ID, auth token, region info).
+
+---
+
+### 🌐 [2] Feed API Gateway
+
+- Receives the feed request.
+- Applies authentication, rate-limiting, and logging.
+- Routes the request to a **Feed Generation Node** using **consistent hashing** based on `user_id`.
+
+---
+
+### 🧠 [3] Feed Generation Node (per user)
+
+This node orchestrates the merging and ranking of feed components.
+
+#### It performs the following actions:
+
+- **Fetch from Feed Shard:**
+  - Retrieves the user's precomputed feed entries (pushed from friends) from fast storage like Redis, Cassandra, or DynamoDB.
+  
+- **Fetch Hot Posts (Optional):**
+  - Pulls recent **viral or celebrity content** from a shared **hot post cache** (Redis/Memcached).
+  - Optionally filters by region, language, or topic.
+
+- **Request Ads from Ad Server:**
+  - Sends a request for eligible ads targeted to the user.
+  - Receives ad entries with metadata, impressions/click budgets, etc.
+
+- **Merge + Rerank Feed:**
+  - Combines all sources (feed shard + hot cache + ads).
+  - Runs merged list through the **ranking engine** (ML-based or heuristic).
+  - Applies deduplication, diversity constraints, and sponsored content rules.
+
+---
+
+### 📤 [4] Final Feed Response
+
+- The **sorted and ranked feed** (typically 20–100 entries) is serialized and returned to the client.
+- Metadata (e.g., ad tracking IDs, feed versioning) is embedded in the response.
+- Optional: cache the result for a short TTL (e.g., 30–60s) to reduce load.
+
+---
+
+### 📝 Visual Summary (Text Representation)
+
+
+
+```text
++--------------------+
+|  User Opens App    |
++--------------------+
+           |
+           v
++------------------------+
+|  GET /feed request     |
+|  (client → gateway)    |
++------------------------+
+           |
+           v
++---------------------------+
+| Feed API Gateway          |
+| - Auth & routing          |
+| - Consistent hash on UID |
++---------------------------+
+           |
+           v
++-----------------------------------+
+| Feed Generation Node (User-Based)|
++-----------------------------------+
+           |
+           |------------------------------+
+           |                              |
+           v                              v
++--------------------+       +--------------------------+
+|  Pull from Feed    |       |   Pull from Hot Cache    |
+|  Shard (user-specific) |    |  (viral/celebrity posts) |
++--------------------+       +--------------------------+
+           |                              |
+           +---------------+--------------+
+                           |
+                           v
+                 +--------------------+
+                 |  Request Ads from  |
+                 |    Ad Server       |
+                 +--------------------+
+                           |
+                           v
+                +-------------------------+
+                | Merge + Rerank Entries  |
+                | - ML model / heuristic  |
+                | - Diversity + policies  |
+                +-------------------------+
+                           |
+                           v
+                 +----------------------+
+                 | Return Final Feed to |
+                 |     Client UI        |
+                 +----------------------+
+
 🧠 Recap: Why Merge-on-Read + Feed Shards Works
 Benefit	Description
 ✅ Scalable Writes	Only friend-based fan-out is stored in feed shards
